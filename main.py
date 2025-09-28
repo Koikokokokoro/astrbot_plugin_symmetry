@@ -207,12 +207,16 @@ class SymmetryByReply(Star):
         # 参数设置
         if param in ("左右", "lr", "left", "左右对称"):
             mode = "lr"
-        elif param in ("上下", "ud", "vertical", "updown", "上下对称"):
+        elif param in ("右左", "右", "rl", "right"):
+            mode = "rl"
+        elif param in ("上下", "上", "ud", "updown"):
             mode = "ud"
-        elif param in ("中心", "center", "rot", "180", "中心对称"):
+        elif param in ("下上", "下", "bt", "bottom"):
+            mode = "bt"
+        elif param in ("中心", "center", "rot", "中心对称"):
             mode = "center"
         else:
-            yield event.plain_result("参数无效。可选：左右、上下、中心（或 lr / ud / center）。")
+            yield event.plain_result("参数无效。可选：左右、右左、上下、下上、中心（或 lr/rl/ud/bt/center）。")
             return
 
         # 获取图片 bytes
@@ -276,12 +280,47 @@ class SymmetryByReply(Star):
             out.paste(mirrored, (w - target_w, h - target_h), mirrored if mirrored.mode in ("RGBA", "LA") else None)
             return out
 
+        def mirror_right_to_left(img: Image.Image) -> Image.Image:
+            w, h = img.size
+            left_w = w // 2
+            right_w = w - left_w
+            if right_w == 0:
+                return img.copy()
+            # 取右侧区域并镜像到左侧
+            right = img.crop((w - right_w, 0, w, h))
+            mirrored = right.transpose(Image.FLIP_LEFT_RIGHT)
+            # 若目标左侧宽度与源不同（奇数宽），调整大小以填满左侧
+            if mirrored.size[0] != left_w or mirrored.size[1] != h:
+                mirrored = mirrored.resize((left_w, h), resample=Image.LANCZOS)
+            out = img.copy()
+            out.paste(mirrored, (0, 0), mirrored if mirrored.mode in ("RGBA", "LA") else None)
+            return out
+
+        def mirror_bottom_to_top(img: Image.Image) -> Image.Image:
+            w, h = img.size
+            top_h = h // 2
+            bottom_h = h - top_h
+            if bottom_h == 0:
+                return img.copy()
+            # 取下侧区域并镜像到上方
+            bottom = img.crop((0, h - bottom_h, w, h))
+            mirrored = bottom.transpose(Image.FLIP_TOP_BOTTOM)
+            if mirrored.size[1] != top_h or mirrored.size[0] != w:
+                mirrored = mirrored.resize((w, top_h), resample=Image.LANCZOS)
+            out = img.copy()
+            out.paste(mirrored, (0, 0), mirrored if mirrored.mode in ("RGBA", "LA") else None)
+            return out
+
         try:
             if mode == "lr":
                 out = mirror_left_to_right(im)
+            elif mode == "rl":
+                out = mirror_right_to_left(im)
             elif mode == "ud":
                 out = mirror_top_to_bottom(im)
-            else:
+            elif mode == "bt":
+                out = mirror_bottom_to_top(im)
+            else:  # center
                 out = mirror_center_quadrant(im)
         except Exception as e:
             logger.error(f"对称处理失败: {e}")
