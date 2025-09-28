@@ -1,8 +1,8 @@
-# helloworld
+# Symmetry
 
-AstrBot 插件模板
+给astrbot写的神秘图片处理小插件
 
-A template plugin for AstrBot plugin feature
+隔壁群的bot看到的功能，搜了下astrbot貌似没有，于是写了个这玩意
 
 # 支持
 
