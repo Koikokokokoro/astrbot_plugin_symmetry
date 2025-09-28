@@ -132,6 +132,30 @@ async def get_first_image(event: AstrMessageEvent) -> bytes | None:
 
     return None
 
+def _make_image_component_from_path(path: str):
+    """
+    尝试把本地文件 path 转成 Comp.Image 的组件。
+    优先使用 Comp.Image.fromFile，如果不可用，尝试用 bytes 方式创建（fromBytes/fromData/from_data/fromData）。
+    若都不可用，抛出异常。
+    """
+    if not hasattr(Comp, "Image"):
+        raise AttributeError("Comp.Image 不存在")
+    Img = Comp.Image
+    # 优先 fromFile
+    if hasattr(Img, "fromFile"):
+        return Img.fromFile(path)
+    # 读 bytes
+    with open(path, "rb") as f:
+        b = f.read()
+    # 尝试多种命名
+    if hasattr(Img, "fromBytes"):
+        return Img.fromBytes(b)
+    if hasattr(Img, "from_data"):
+        return Img.from_data(b)
+    if hasattr(Img, "fromData"):
+        return Img.fromData(b)
+    # 若没有可用方法，抛出
+    raise AttributeError("Comp.Image 没有 fromFile/fromBytes/fromData 等可用方法")
 
 @register("sym", "Symmetry", "对图片进行对称处理", "1.0.0")
 class SymmetryByReply(Star):
@@ -205,30 +229,85 @@ class SymmetryByReply(Star):
             yield event.plain_result("打开图片失败（格式可能不支持）。")
             return
 
+            # === 自定义对称实现：侧边/上半/左上->右下（替换原先的 transpose/rotate 行为） ===
+
+        def mirror_left_to_right(img: Image.Image) -> Image.Image:
+            w, h = img.size
+            left_w = w // 2
+            if left_w == 0:
+                return img.copy()
+            left = img.crop((0, 0, left_w, h))
+            mirrored = left.transpose(Image.FLIP_LEFT_RIGHT)
+            right_w = w - left_w
+            if mirrored.size[0] != right_w or mirrored.size[1] != h:
+                mirrored = mirrored.resize((right_w, h), resample=Image.LANCZOS)
+            out = img.copy()
+            out.paste(mirrored, (w - right_w, 0), mirrored if mirrored.mode in ("RGBA", "LA") else None)
+            return out
+
+        def mirror_top_to_bottom(img: Image.Image) -> Image.Image:
+            w, h = img.size
+            top_h = h // 2
+            if top_h == 0:
+                return img.copy()
+            top = img.crop((0, 0, w, top_h))
+            mirrored = top.transpose(Image.FLIP_TOP_BOTTOM)
+            bottom_h = h - top_h
+            if mirrored.size[1] != bottom_h or mirrored.size[0] != w:
+                mirrored = mirrored.resize((w, bottom_h), resample=Image.LANCZOS)
+            out = img.copy()
+            out.paste(mirrored, (0, h - bottom_h), mirrored if mirrored.mode in ("RGBA", "LA") else None)
+            return out
+
+        def mirror_center_quadrant(img: Image.Image) -> Image.Image:
+            w, h = img.size
+            left_w = w // 2
+            top_h = h // 2
+            if left_w == 0 or top_h == 0:
+                return img.copy()
+            tl = img.crop((0, 0, left_w, top_h))
+            # 左上 -> 右下 采用旋转 180 度（等价于中心对称）
+            mirrored = tl.rotate(180)
+            target_w = w - left_w
+            target_h = h - top_h
+            if mirrored.size != (target_w, target_h):
+                mirrored = mirrored.resize((target_w, target_h), resample=Image.LANCZOS)
+            out = img.copy()
+            out.paste(mirrored, (w - target_w, h - target_h), mirrored if mirrored.mode in ("RGBA", "LA") else None)
+            return out
+
         try:
             if mode == "lr":
-                out = im.transpose(Image.FLIP_LEFT_RIGHT)
+                out = mirror_left_to_right(im)
             elif mode == "ud":
-                out = im.transpose(Image.FLIP_TOP_BOTTOM)
+                out = mirror_top_to_bottom(im)
             else:
-                out = im.rotate(180, expand=False)
+                out = mirror_center_quadrant(im)
+        except Exception as e:
+            logger.error(f"对称处理失败: {e}")
+            yield event.plain_result("图片对称处理出错。")
+            return
 
-            # 保存并发送
-            tmpdir = tempfile.gettempdir()
-            fname = _randname("png")
-            out_path = os.path.join(tmpdir, fname)
+            # 保存到临时文件并发送（尽量兼容 Comp.Image 的多种构造器）
+        tmpdir = tempfile.gettempdir()
+        fname = _randname("png")
+        out_path = os.path.join(tmpdir, fname)
+        try:
             out.save(out_path, format="PNG")
+        except Exception as e:
+            logger.error(f"保存临时图片失败: {e}")
+            yield event.plain_result("保存临时图片失败。")
+            return
 
-            chain = [Comp.Image.fromFile(out_path)]
+        try:
+            img_comp = _make_image_component_from_path(out_path)
+            chain = [img_comp]
             yield event.chain_result(chain)
-
-            # 清理临时文件
+        except Exception as e:
+            logger.error(f"发送图片失败: {e}")
+            yield event.plain_result("发送图片失败：当前运行时不支持直接以本地文件或 bytes 构造 Image 组件。")
+        finally:
             try:
                 os.remove(out_path)
             except Exception:
                 pass
-
-        except Exception as e:
-            logger.error(f"图片处理失败: {e}")
-            yield event.plain_result("图片处理失败。")
-            return
